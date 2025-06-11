@@ -33,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var downloadProgress: (percent: Double, speed: String, eta: String)? = nil {
         didSet { updateStatusUI() }
     }
+    var ytDlpProgressWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the status bar item
@@ -123,30 +124,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         appStatus = .downloadingYtDlp
+        showYtDlpProgressWindow()
         downloadAndUnpackYtDlp()
-    }
-
-    func downloadAndUnpackYtDlp() {
-        let url = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp")!
-        let tmpURL = ytDlpDir.appendingPathComponent("yt-dlp.download")
-        let sema = DispatchSemaphore(value: 0)
-        let task = URLSession.shared.downloadTask(with: url) { location, response, error in
-            defer { sema.signal() }
-            guard let location = location, error == nil else {
-                self.appStatus = .error("Failed to download yt-dlp")
-                return
-            }
-            do {
-                try FileManager.default.moveItem(at: location, to: tmpURL)
-                try FileManager.default.moveItem(at: tmpURL, to: self.ytDlpPath)
-                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.ytDlpPath.path)
-                self.appStatus = .idle
-            } catch {
-                self.appStatus = .error("Failed to install yt-dlp: \(error)")
-            }
-        }
-        task.resume()
-        sema.wait()
+        hideYtDlpProgressWindow()
     }
 
     @objc func showDownloadWindow() {
@@ -265,9 +245,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let versionLabel = NSTextField(labelWithString: "yt-dlp version: Checking…")
             versionLabel.frame = NSRect(x: 20, y: 130, width: 350, height: 24)
             contentView.addSubview(versionLabel)
-            getYtDlpVersion { version in
-                DispatchQueue.main.async {
-                    versionLabel.stringValue = "yt-dlp version: \(version)"
+            // Only check version if not currently reinstalling
+            if case .downloadingYtDlp = appStatus {
+                versionLabel.stringValue = "yt-dlp version: (reinstalling...)"
+            } else {
+                getYtDlpVersion { version in
+                    DispatchQueue.main.async {
+                        versionLabel.stringValue = "yt-dlp version: \(version)"
+                    }
                 }
             }
 
@@ -311,12 +296,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setAutostart(enabled: Bool) {
-        // Remove unused bundleURL variable
-        if enabled {
-            SMLoginItemSetEnabled(Bundle.main.bundleIdentifier! as CFString, true)
-        } else {
-            SMLoginItemSetEnabled(Bundle.main.bundleIdentifier! as CFString, false)
-        }
+        // Use SMLoginItemSetEnabled only for helper apps, not for main app bundle
+        // For now, just show an alert to indicate this is not supported directly
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Autostart Not Supported"
+        alert.informativeText = "Autostart requires a helper app and cannot be enabled directly from this app. Please see Apple's documentation for details."
+        alert.runModal()
     }
 
     // --- yt-dlp version ---
@@ -351,7 +337,118 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global().async {
             // Remove old yt-dlp if exists
             try? FileManager.default.removeItem(at: self.ytDlpPath)
+            DispatchQueue.main.async {
+                self.showYtDlpProgressWindow()
+            }
             self.downloadAndUnpackYtDlp()
+            DispatchQueue.main.async {
+                self.hideYtDlpProgressWindow()
+            }
+        }
+    }
+
+    func showYtDlpProgressWindow() {
+        DispatchQueue.main.async {
+            if self.ytDlpProgressWindow != nil { return }
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 100),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false)
+            window.title = "Downloading yt-dlp"
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+
+            let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
+            if #available(macOS 10.12, *) {
+                let label = NSTextField(labelWithString: "Downloading yt-dlp, please wait…")
+                label.frame = NSRect(x: 20, y: 60, width: 280, height: 24)
+                contentView.addSubview(label)
+            } else {
+                let label = NSTextField(frame: NSRect(x: 20, y: 60, width: 280, height: 24))
+                label.stringValue = "Downloading yt-dlp, please wait…"
+                label.isEditable = false
+                label.isBordered = false
+                label.drawsBackground = false
+                contentView.addSubview(label)
+            }
+
+            let progress = NSProgressIndicator(frame: NSRect(x: 20, y: 30, width: 280, height: 20))
+            progress.style = .bar
+            progress.isIndeterminate = false
+            progress.minValue = 0
+            progress.maxValue = 1
+            progress.doubleValue = 0
+            progress.startAnimation(nil)
+            progress.controlTint = .blueControlTint
+            progress.usesThreadedAnimation = true
+            progress.isDisplayedWhenStopped = true
+            progress.identifier = NSUserInterfaceItemIdentifier("yt-dlp-progress")
+            contentView.addSubview(progress)
+
+            window.contentView = contentView
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            self.ytDlpProgressWindow = window
+        }
+    }
+
+    func updateYtDlpProgress(_ percent: Double?) {
+        DispatchQueue.main.async {
+            guard let window = self.ytDlpProgressWindow,
+                  let progress = window.contentView?.subviews.first(where: { $0.identifier?.rawValue == "yt-dlp-progress" }) as? NSProgressIndicator else { return }
+            if let percent = percent {
+                progress.isIndeterminate = false
+                progress.doubleValue = percent / 100.0
+            } else {
+                progress.isIndeterminate = true
+                progress.startAnimation(nil)
+            }
+        }
+    }
+
+    func hideYtDlpProgressWindow() {
+        DispatchQueue.main.async {
+            self.ytDlpProgressWindow?.close()
+            self.ytDlpProgressWindow = nil
+        }
+    }
+
+    func downloadAndUnpackYtDlp() {
+        let url = URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp")!
+        let tmpURL = ytDlpDir.appendingPathComponent("yt-dlp.download")
+        let sema = DispatchSemaphore(value: 0)
+        let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+            defer { sema.signal() }
+            guard let location = location, error == nil else {
+                self.appStatus = .error("Failed to download yt-dlp")
+                return
+            }
+            do {
+                try? FileManager.default.removeItem(at: self.ytDlpPath)
+                try FileManager.default.moveItem(at: location, to: tmpURL)
+                try FileManager.default.moveItem(at: tmpURL, to: self.ytDlpPath)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.ytDlpPath.path)
+                self.appStatus = .idle
+            } catch {
+                self.appStatus = .error("Failed to install yt-dlp: \(error)")
+            }
+        }
+        // Progress reporting (only on macOS 10.13+)
+        if #available(macOS 10.13, *) {
+            task.progress.addObserver(self, forKeyPath: #keyPath(Progress.fractionCompleted), options: [.new], context: nil)
+            task.resume()
+            while sema.wait(timeout: .now() + 0.1) == .timedOut {
+                let percent = task.progress.fractionCompleted.isFinite ? task.progress.fractionCompleted * 100.0 : nil
+                self.updateYtDlpProgress(percent)
+            }
+            task.progress.removeObserver(self, forKeyPath: #keyPath(Progress.fractionCompleted), context: nil)
+        } else {
+            task.resume()
+            while sema.wait(timeout: .now() + 0.1) == .timedOut {
+                self.updateYtDlpProgress(nil)
+            }
         }
     }
 
@@ -363,6 +460,16 @@ extension AppDelegate: NSWindowDelegate {
         if let win = notification.object as? NSWindow, win == self.optionsWindow {
             self.optionsWindow = nil
         }
+    }
+
+    // Handle KVO for yt-dlp download progress (no-op, prevents crash)
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == #keyPath(Progress.fractionCompleted) {
+            // No-op: progress is polled in downloadAndUnpackYtDlp, so nothing needed here
+            return
+        }
+        // For other keys, call super
+        (self as NSObject).observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
     }
 }
 
