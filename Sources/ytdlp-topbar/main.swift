@@ -560,9 +560,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.appStatus = .downloadingVideo(url)
             self.downloadProgress = nil
 
-            var args = ["-o", saveURL.path, url, "--progress", "--newline"]
+            var args = ["-o", saveURL.deletingPathExtension().path + ".%(ext)s", url, "--progress", "--newline"]
             args.append("--ffmpeg-location")
             args.append(self.ffmpegPath.path)
+
+            // Format selection logic
             if !self.selectedVideoFormatIDs.isEmpty || !self.selectedAudioFormatIDs.isEmpty {
                 let vIDs = self.selectedVideoFormatIDs.sorted().joined(separator: "+")
                 let aIDs = self.selectedAudioFormatIDs.sorted().joined(separator: "+")
@@ -578,16 +580,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     args.append("-f")
                     args.append(formatString)
                 }
+                // Always merge to selectedFormat if not mp3
+                if self.selectedFormat != "mp3" {
+                    args.append("--merge-output-format")
+                    args.append(self.selectedFormat)
+                }
             } else if self.selectedFormat == "mp3" {
                 args.append("-x")
                 args.append("--audio-format")
                 args.append("mp3")
             } else {
                 args.append("-f")
-                args.append("bestvideo[ext=\(self.selectedFormat)]+bestaudio[ext=m4a]/best[ext=\(self.selectedFormat)]/best")
+                args.append("bestvideo+bestaudio/best")
                 args.append("--merge-output-format")
                 args.append(self.selectedFormat)
             }
+
             if self.downloadCaptions {
                 args.append("--write-auto-subs")
                 args.append("--sub-lang")
