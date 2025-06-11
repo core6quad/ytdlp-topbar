@@ -10,6 +10,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return dir
     }()
     var ytDlpPath: URL { ytDlpDir.appendingPathComponent("yt-dlp") }
+
+    // FFmpeg path and status
+    var ffmpegPath: URL { ytDlpDir.appendingPathComponent("ffmpeg") }
+    var ffmpegProgressWindow: NSWindow?
+
+    // Format selection
+    let supportedFormats = ["mp4", "mkv", "webm", "flv", "mp3"]
+    var selectedFormat: String = "mp4"
+
+    // Track selection state
+    struct TrackInfo {
+        let formatID: String
+        let ext: String
+        let resolution: String
+        let fps: String
+        let vcodec: String
+        let acodec: String
+        let filesize: Int64?
+        let formatNote: String
+    }
+    var availableVideoTracks: [TrackInfo] = []
+    var availableAudioTracks: [TrackInfo] = []
+    var selectedVideoFormatIDs: Set<String> = []
+    var selectedAudioFormatIDs: Set<String> = []
+
     @objc func quitApp(_ sender: Any?) {
         NSApp.terminate(nil)
     }
@@ -34,6 +59,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         didSet { updateStatusUI() }
     }
     var ytDlpProgressWindow: NSWindow?
+
+    // Caption options
+    var downloadCaptions: Bool = false
+    var embedCaptions: Bool = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the status bar item
@@ -119,29 +148,403 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func ensureYtDlpPresent() {
-        if FileManager.default.fileExists(atPath: ytDlpPath.path) {
+        let needsYtDlp = !FileManager.default.fileExists(atPath: ytDlpPath.path)
+        let needsFfmpeg = !FileManager.default.fileExists(atPath: ffmpegPath.path)
+        if !needsYtDlp && !needsFfmpeg {
             appStatus = .idle
             return
         }
-        appStatus = .downloadingYtDlp
-        showYtDlpProgressWindow()
-        downloadAndUnpackYtDlp()
-        hideYtDlpProgressWindow()
+        if needsYtDlp {
+            appStatus = .downloadingYtDlp
+            showYtDlpProgressWindow()
+            downloadAndUnpackYtDlp()
+            hideYtDlpProgressWindow()
+        }
+        if needsFfmpeg {
+            showFfmpegProgressWindow()
+            downloadAndUnpackFfmpeg()
+            hideFfmpegProgressWindow()
+        }
+        appStatus = .idle
     }
 
+    // --- FFmpeg Download ---
+    func showFfmpegProgressWindow() {
+        DispatchQueue.main.async {
+            if self.ffmpegProgressWindow != nil { return }
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 120),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false)
+            window.title = "Downloading ffmpeg"
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+
+            let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
+            let label: NSTextField
+            if #available(macOS 10.12, *) {
+                label = NSTextField(labelWithString: "Downloading ffmpeg, please wait…")
+            } else {
+                label = NSTextField(frame: NSRect(x: 20, y: 70, width: 280, height: 24))
+                label.stringValue = "Downloading ffmpeg, please wait…"
+                label.isEditable = false
+                label.isBordered = false
+                label.drawsBackground = false
+            }
+            label.frame = NSRect(x: 20, y: 70, width: 280, height: 24)
+            contentView.addSubview(label)
+
+            let progress = NSProgressIndicator(frame: NSRect(x: 20, y: 40, width: 280, height: 20))
+            progress.style = .bar
+            progress.isIndeterminate = false
+            progress.minValue = 0
+            progress.maxValue = 1
+            progress.doubleValue = 0
+            progress.startAnimation(nil)
+            progress.controlTint = .blueControlTint
+            progress.usesThreadedAnimation = true
+            progress.isDisplayedWhenStopped = true
+            progress.identifier = NSUserInterfaceItemIdentifier("ffmpeg-progress")
+            contentView.addSubview(progress)
+
+            let redownloadButton: NSButton
+            if #available(macOS 10.12, *) {
+                redownloadButton = NSButton(title: "Redownload", target: self, action: #selector(self.redownloadFfmpeg))
+            } else {
+                redownloadButton = NSButton(frame: NSRect(x: 200, y: 10, width: 100, height: 24))
+                redownloadButton.title = "Redownload"
+                redownloadButton.target = self
+                redownloadButton.action = #selector(self.redownloadFfmpeg)
+            }
+            redownloadButton.frame = NSRect(x: 200, y: 10, width: 100, height: 24)
+            contentView.addSubview(redownloadButton)
+
+            window.contentView = contentView
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            self.ffmpegProgressWindow = window
+        }
+    }
+
+    @objc func redownloadFfmpeg() {
+        DispatchQueue.global().async {
+            try? FileManager.default.removeItem(at: self.ffmpegPath)
+            self.showFfmpegProgressWindow()
+            self.downloadAndUnpackFfmpeg()
+            self.hideFfmpegProgressWindow()
+        }
+    }
+
+    func updateFfmpegProgress(_ percent: Double?) {
+        DispatchQueue.main.async {
+            guard let window = self.ffmpegProgressWindow,
+                  let progress = window.contentView?.subviews.first(where: { $0.identifier?.rawValue == "ffmpeg-progress" }) as? NSProgressIndicator else { return }
+            if let percent = percent {
+                progress.isIndeterminate = false
+                progress.doubleValue = percent / 100.0
+            } else {
+                progress.isIndeterminate = true
+                progress.startAnimation(nil)
+            }
+        }
+    }
+
+    func hideFfmpegProgressWindow() {
+        DispatchQueue.main.async {
+            self.ffmpegProgressWindow?.close()
+            self.ffmpegProgressWindow = nil
+        }
+    }
+
+    func downloadAndUnpackFfmpeg() {
+        // Download static ffmpeg binary for macOS (from evermeet.cx or gyan.dev)
+        let url = URL(string: "https://evermeet.cx/ffmpeg/ffmpeg-6.1.1.zip")!
+        let tmpZip = ytDlpDir.appendingPathComponent("ffmpeg.zip")
+        let sema = DispatchSemaphore(value: 0)
+        let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+            defer { sema.signal() }
+            guard let location = location, error == nil else { return }
+            do {
+                try? FileManager.default.removeItem(at: tmpZip)
+                try FileManager.default.moveItem(at: location, to: tmpZip)
+                // Unzip ffmpeg binary
+                let unzipTask = Process()
+                unzipTask.launchPath = "/usr/bin/unzip"
+                unzipTask.arguments = ["-o", tmpZip.path, "-d", self.ytDlpDir.path]
+                if #available(macOS 10.13, *) {
+                    try? unzipTask.run()
+                } else {
+                    unzipTask.launch()
+                }
+                unzipTask.waitUntilExit()
+                // ffmpeg binary will be at ytDlpDir/ffmpeg
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.ffmpegPath.path)
+                try? FileManager.default.removeItem(at: tmpZip)
+            } catch {}
+        }
+        if #available(macOS 10.13, *) {
+            task.progress.addObserver(self, forKeyPath: #keyPath(Progress.fractionCompleted), options: [.new], context: nil)
+            task.resume()
+            while sema.wait(timeout: .now() + 0.1) == .timedOut {
+                let percent = task.progress.fractionCompleted.isFinite ? task.progress.fractionCompleted * 100.0 : nil
+                self.updateFfmpegProgress(percent)
+            }
+            task.progress.removeObserver(self, forKeyPath: #keyPath(Progress.fractionCompleted), context: nil)
+        } else {
+            task.resume()
+            while sema.wait(timeout: .now() + 0.1) == .timedOut {
+                self.updateFfmpegProgress(nil)
+            }
+        }
+    }
+
+    // --- Download Window with format selector and captions ---
     @objc func showDownloadWindow() {
         let alert = NSAlert()
         alert.messageText = "Download YouTube Video"
-        alert.informativeText = "Enter the YouTube URL:"
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        alert.accessoryView = input
+        alert.informativeText = "Enter the YouTube URL and options:"
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 350, height: 260))
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 236, width: 340, height: 24))
+        input.placeholderString = "YouTube URL"
+        container.addSubview(input)
+
+        // Format selector
+        var formatLabel: NSTextField
+        if #available(macOS 10.12, *) {
+            formatLabel = NSTextField(labelWithString: "Format:")
+        } else {
+            formatLabel = NSTextField(frame: NSRect(x: 0, y: 212, width: 50, height: 20))
+            formatLabel.stringValue = "Format:"
+            formatLabel.isEditable = false
+            formatLabel.isBordered = false
+            formatLabel.drawsBackground = false
+        }
+        formatLabel.frame = NSRect(x: 0, y: 212, width: 50, height: 20)
+        container.addSubview(formatLabel)
+
+        let formatPopup = NSPopUpButton(frame: NSRect(x: 60, y: 210, width: 100, height: 24), pullsDown: false)
+        formatPopup.addItems(withTitles: supportedFormats)
+        formatPopup.selectItem(withTitle: selectedFormat)
+        container.addSubview(formatPopup)
+
+        var captionsCheckbox: NSButton
+        var embedCheckbox: NSButton
+
+        if #available(macOS 10.12, *) {
+            captionsCheckbox = NSButton(checkboxWithTitle: "Download captions", target: nil, action: nil)
+            captionsCheckbox.frame = NSRect(x: 0, y: 186, width: 200, height: 20)
+            captionsCheckbox.state = downloadCaptions ? .on : .off
+            container.addSubview(captionsCheckbox)
+
+            embedCheckbox = NSButton(checkboxWithTitle: "Embed captions", target: nil, action: nil)
+            embedCheckbox.frame = NSRect(x: 0, y: 162, width: 200, height: 20)
+            embedCheckbox.state = embedCaptions ? .on : .off
+            container.addSubview(embedCheckbox)
+        } else {
+            captionsCheckbox = NSButton(frame: NSRect(x: 0, y: 186, width: 200, height: 20))
+            captionsCheckbox.setButtonType(.switch)
+            captionsCheckbox.title = "Download captions"
+            captionsCheckbox.state = downloadCaptions ? .on : .off
+            container.addSubview(captionsCheckbox)
+
+            embedCheckbox = NSButton(frame: NSRect(x: 0, y: 162, width: 200, height: 20))
+            embedCheckbox.setButtonType(.switch)
+            embedCheckbox.title = "Embed captions"
+            embedCheckbox.state = embedCaptions ? .on : .off
+            container.addSubview(embedCheckbox)
+        }
+
+        // Video/audio track selectors (multi-choice, autoprobe)
+        var videoLabel: NSTextField
+        if #available(macOS 10.12, *) {
+            videoLabel = NSTextField(labelWithString: "Video Tracks:")
+        } else {
+            videoLabel = NSTextField(frame: NSRect(x: 0, y: 138, width: 100, height: 20))
+            videoLabel.stringValue = "Video Tracks:"
+            videoLabel.isEditable = false
+            videoLabel.isBordered = false
+            videoLabel.drawsBackground = false
+        }
+        videoLabel.frame = NSRect(x: 0, y: 138, width: 100, height: 20)
+        container.addSubview(videoLabel)
+
+        let videoScroll = NSScrollView(frame: NSRect(x: 100, y: 90, width: 230, height: 60))
+        let videoTable = NSTableView(frame: videoScroll.bounds)
+        let videoCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("video"))
+        videoCol.title = "Video"
+        videoCol.width = 230
+        videoTable.addTableColumn(videoCol)
+        videoTable.headerView = nil
+        videoTable.allowsMultipleSelection = true
+        videoScroll.documentView = videoTable
+        videoScroll.hasVerticalScroller = true
+        container.addSubview(videoScroll)
+
+        var audioLabel: NSTextField
+        if #available(macOS 10.12, *) {
+            audioLabel = NSTextField(labelWithString: "Audio Tracks:")
+        } else {
+            audioLabel = NSTextField(frame: NSRect(x: 0, y: 68, width: 100, height: 20))
+            audioLabel.stringValue = "Audio Tracks:"
+            audioLabel.isEditable = false
+            audioLabel.isBordered = false
+            audioLabel.drawsBackground = false
+        }
+        audioLabel.frame = NSRect(x: 0, y: 68, width: 100, height: 20)
+        container.addSubview(audioLabel)
+
+        let audioScroll = NSScrollView(frame: NSRect(x: 100, y: 20, width: 230, height: 60))
+        let audioTable = NSTableView(frame: audioScroll.bounds)
+        let audioCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("audio"))
+        audioCol.title = "Audio"
+        audioCol.width = 230
+        audioTable.addTableColumn(audioCol)
+        audioTable.headerView = nil
+        audioTable.allowsMultipleSelection = true
+        audioScroll.documentView = audioTable
+        audioScroll.hasVerticalScroller = true
+        container.addSubview(audioScroll)
+
+        // Table data sources
+        class TrackTableDataSource: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+            var tracks: [TrackInfo] = []
+            var selectedIDs: Set<String> = []
+            let isVideo: Bool
+            init(isVideo: Bool) { self.isVideo = isVideo }
+            func numberOfRows(in tableView: NSTableView) -> Int { tracks.count }
+            func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+                let cell = NSTextField()
+                cell.isEditable = false
+                cell.isBordered = false
+                cell.drawsBackground = false
+                let t = tracks[row]
+                let size = t.resolution.isEmpty ? "" : "\(t.resolution)p"
+                let fps = t.fps.isEmpty ? "" : "\(t.fps)fps"
+                let note = t.formatNote.isEmpty ? "" : " (\(t.formatNote))"
+                let sizeStr = t.filesize != nil ? String(format: " %.1fMB", Double(t.filesize!) / 1024 / 1024) : ""
+                if isVideo {
+                    cell.stringValue = "\(size) \(fps) \(t.ext)\(note)\(sizeStr) [\(t.formatID)]"
+                } else {
+                    let kbps = t.formatNote.isEmpty ? "" : " (\(t.formatNote))"
+                    cell.stringValue = "\(t.acodec) \(t.ext)\(kbps)\(sizeStr) [\(t.formatID)]"
+                }
+                return cell
+            }
+        }
+        let videoDataSource = TrackTableDataSource(isVideo: true)
+        let audioDataSource = TrackTableDataSource(isVideo: false)
+        videoTable.dataSource = videoDataSource
+        videoTable.delegate = videoDataSource
+        audioTable.dataSource = audioDataSource
+        audioTable.delegate = audioDataSource
+
+        // Selection binding
+        func updateSelectedTracks() {
+            selectedVideoFormatIDs = Set(videoTable.selectedRowIndexes.compactMap { idx in
+                guard idx >= 0 && idx < videoDataSource.tracks.count else { return nil }
+                return videoDataSource.tracks[idx].formatID
+            })
+            selectedAudioFormatIDs = Set(audioTable.selectedRowIndexes.compactMap { idx in
+                guard idx >= 0 && idx < audioDataSource.tracks.count else { return nil }
+                return audioDataSource.tracks[idx].formatID
+            })
+        }
+        videoTable.target = self
+        videoTable.action = #selector(updateSelectedTracksAction)
+        audioTable.target = self
+        audioTable.action = #selector(updateSelectedTracksAction)
+
+        // Autoprobe logic
+        func autoprobeIfValidURL(_ url: String) {
+            guard !url.isEmpty, url.contains("://") else { return }
+            self.probeTracks(url: url) { videoTracks, audioTracks in
+                self.availableVideoTracks = videoTracks.sorted { ($0.resolution, $0.fps) > ($1.resolution, $1.fps) }
+                self.availableAudioTracks = audioTracks
+                DispatchQueue.main.async {
+                    videoDataSource.tracks = self.availableVideoTracks
+                    audioDataSource.tracks = self.availableAudioTracks
+                    videoTable.reloadData()
+                    audioTable.reloadData()
+                    // Select all by default
+                    videoTable.selectAll(nil)
+                    audioTable.selectAll(nil)
+                    updateSelectedTracks()
+                }
+            }
+        }
+        // Observe input changes for autoprobe
+        NotificationCenter.default.addObserver(forName: NSTextField.textDidChangeNotification, object: input, queue: .main) { _ in
+            autoprobeIfValidURL(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        // Initial autoprobe if prefilled
+        autoprobeIfValidURL(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        alert.accessoryView = container
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Cancel")
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             let url = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            downloadCaptions = (captionsCheckbox.state == .on)
+            embedCaptions = (embedCheckbox.state == .on)
+            if let selected = formatPopup.selectedItem?.title {
+                selectedFormat = selected
+            }
+            updateSelectedTracks()
             if !url.isEmpty {
                 downloadYouTubeVideo(url: url)
+            }
+        }
+    }
+
+    @objc func updateSelectedTracksAction(_ sender: Any?) {
+        // No-op: selection is updated in showDownloadWindow's updateSelectedTracks closure
+    }
+
+    func probeTracks(url: String, completion: @escaping ([TrackInfo], [TrackInfo]) -> Void) {
+        DispatchQueue.global().async {
+            let task = Process()
+            task.launchPath = self.ytDlpPath.path
+            task.arguments = ["-J", url]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            do {
+                if #available(macOS 10.13, *) {
+                    try task.run()
+                } else {
+                    task.launch()
+                }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                      let formats = json["formats"] as? [[String: Any]] else {
+                    completion([], [])
+                    return
+                }
+                var videoTracks: [TrackInfo] = []
+                var audioTracks: [TrackInfo] = []
+                for f in formats {
+                    let formatID = f["format_id"] as? String ?? ""
+                    let ext = f["ext"] as? String ?? ""
+                    let resolution = f["height"].flatMap { "\($0)" } ?? ""
+                    let fps = f["fps"].flatMap { "\($0)" } ?? ""
+                    let vcodec = f["vcodec"] as? String ?? ""
+                    let acodec = f["acodec"] as? String ?? ""
+                    let filesize = (f["filesize"] as? NSNumber)?.int64Value
+                    let note = f["format_note"] as? String ?? ""
+                    let info = TrackInfo(formatID: formatID, ext: ext, resolution: resolution, fps: fps, vcodec: vcodec, acodec: acodec, filesize: filesize, formatNote: note)
+                    if vcodec != "none" && !resolution.isEmpty {
+                        videoTracks.append(info)
+                    } else if acodec != "none" && vcodec == "none" {
+                        audioTracks.append(info)
+                    }
+                }
+                completion(videoTracks, audioTracks)
+            } catch {
+                completion([], [])
             }
         }
     }
@@ -149,15 +552,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func downloadYouTubeVideo(url: String) {
         let savePanel = NSSavePanel()
         savePanel.title = "Save Downloaded Video As"
-        savePanel.nameFieldStringValue = "video"
+        savePanel.nameFieldStringValue = "video.\(selectedFormat)"
+        savePanel.allowedFileTypes = [selectedFormat]
         savePanel.canCreateDirectories = true
         savePanel.begin { result in
             guard result == .OK, let saveURL = savePanel.url else { return }
             self.appStatus = .downloadingVideo(url)
             self.downloadProgress = nil
+
+            var args = ["-o", saveURL.path, url, "--progress", "--newline"]
+            args.append("--ffmpeg-location")
+            args.append(self.ffmpegPath.path)
+            if !self.selectedVideoFormatIDs.isEmpty || !self.selectedAudioFormatIDs.isEmpty {
+                let vIDs = self.selectedVideoFormatIDs.sorted().joined(separator: "+")
+                let aIDs = self.selectedAudioFormatIDs.sorted().joined(separator: "+")
+                var formatString = ""
+                if !vIDs.isEmpty && !aIDs.isEmpty {
+                    formatString = "\(vIDs)+\(aIDs)"
+                } else if !vIDs.isEmpty {
+                    formatString = vIDs
+                } else if !aIDs.isEmpty {
+                    formatString = aIDs
+                }
+                if !formatString.isEmpty {
+                    args.append("-f")
+                    args.append(formatString)
+                }
+            } else if self.selectedFormat == "mp3" {
+                args.append("-x")
+                args.append("--audio-format")
+                args.append("mp3")
+            } else {
+                args.append("-f")
+                args.append("bestvideo[ext=\(self.selectedFormat)]+bestaudio[ext=m4a]/best[ext=\(self.selectedFormat)]/best")
+                args.append("--merge-output-format")
+                args.append(self.selectedFormat)
+            }
+            if self.downloadCaptions {
+                args.append("--write-auto-subs")
+                args.append("--sub-lang")
+                args.append("en")
+            }
+            if self.embedCaptions {
+                args.append("--embed-subs")
+            }
             let task = Process()
             task.launchPath = self.ytDlpPath.path
-            task.arguments = ["-o", saveURL.path, url, "--progress", "--newline"]
+            task.arguments = args
             let pipe = Pipe()
             task.standardOutput = pipe
             task.standardError = pipe
