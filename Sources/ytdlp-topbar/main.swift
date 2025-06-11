@@ -306,9 +306,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Download YouTube Video"
         alert.informativeText = "Enter the YouTube URL and options:"
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 370, height: 320))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 420))
 
-        let input = NSTextField(frame: NSRect(x: 0, y: 296, width: 340, height: 24))
+        let input = NSTextField(frame: NSRect(x: 0, y: 396, width: 380, height: 24))
         input.placeholderString = "YouTube URL"
         container.addSubview(input)
 
@@ -317,16 +317,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 10.12, *) {
             formatLabel = NSTextField(labelWithString: "Format:")
         } else {
-            formatLabel = NSTextField(frame: NSRect(x: 0, y: 272, width: 50, height: 20))
+            formatLabel = NSTextField(frame: NSRect(x: 0, y: 372, width: 50, height: 20))
             formatLabel.stringValue = "Format:"
             formatLabel.isEditable = false
             formatLabel.isBordered = false
             formatLabel.drawsBackground = false
         }
-        formatLabel.frame = NSRect(x: 0, y: 272, width: 50, height: 20)
+        formatLabel.frame = NSRect(x: 0, y: 372, width: 50, height: 20)
         container.addSubview(formatLabel)
 
-        let formatPopup = NSPopUpButton(frame: NSRect(x: 60, y: 270, width: 100, height: 24), pullsDown: false)
+        let formatPopup = NSPopUpButton(frame: NSRect(x: 60, y: 370, width: 100, height: 24), pullsDown: false)
         formatPopup.addItems(withTitles: supportedFormats)
         formatPopup.selectItem(withTitle: selectedFormat)
         container.addSubview(formatPopup)
@@ -336,22 +336,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if #available(macOS 10.12, *) {
             captionsCheckbox = NSButton(checkboxWithTitle: "Download captions", target: nil, action: nil)
-            captionsCheckbox.frame = NSRect(x: 0, y: 246, width: 200, height: 20)
+            captionsCheckbox.frame = NSRect(x: 0, y: 346, width: 200, height: 20)
             captionsCheckbox.state = downloadCaptions ? .on : .off
             container.addSubview(captionsCheckbox)
 
             embedCheckbox = NSButton(checkboxWithTitle: "Embed captions", target: nil, action: nil)
-            embedCheckbox.frame = NSRect(x: 0, y: 222, width: 200, height: 20)
+            embedCheckbox.frame = NSRect(x: 0, y: 322, width: 200, height: 20)
             embedCheckbox.state = embedCaptions ? .on : .off
             container.addSubview(embedCheckbox)
         } else {
-            captionsCheckbox = NSButton(frame: NSRect(x: 0, y: 246, width: 200, height: 20))
+            captionsCheckbox = NSButton(frame: NSRect(x: 0, y: 346, width: 200, height: 20))
             captionsCheckbox.setButtonType(.switch)
             captionsCheckbox.title = "Download captions"
             captionsCheckbox.state = downloadCaptions ? .on : .off
             container.addSubview(captionsCheckbox)
 
-            embedCheckbox = NSButton(frame: NSRect(x: 0, y: 222, width: 200, height: 20))
+            embedCheckbox = NSButton(frame: NSRect(x: 0, y: 322, width: 200, height: 20))
             embedCheckbox.setButtonType(.switch)
             embedCheckbox.title = "Embed captions"
             embedCheckbox.state = embedCaptions ? .on : .off
@@ -363,48 +363,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 10.12, *) {
             videoLabel = NSTextField(labelWithString: "Video Tracks:")
         } else {
-            videoLabel = NSTextField(frame: NSRect(x: 0, y: 198, width: 100, height: 20))
+            videoLabel = NSTextField(frame: NSRect(x: 0, y: 298, width: 100, height: 20))
             videoLabel.stringValue = "Video Tracks:"
             videoLabel.isEditable = false
             videoLabel.isBordered = false
             videoLabel.drawsBackground = false
         }
-        videoLabel.frame = NSRect(x: 0, y: 198, width: 100, height: 20)
+        videoLabel.frame = NSRect(x: 0, y: 298, width: 100, height: 20)
         container.addSubview(videoLabel)
 
-        let videoScroll = NSScrollView(frame: NSRect(x: 0, y: 120, width: 360, height: 70))
-        let videoList = NSStackView(frame: videoScroll.bounds)
+        // --- Video ScrollView with always-on vertical scrollbar ---
+        let videoScroll = NSScrollView(frame: NSRect(x: 0, y: 170, width: 380, height: 120))
+        videoScroll.hasVerticalScroller = true
+        videoScroll.autohidesScrollers = false
+        videoScroll.borderType = .bezelBorder
+        videoScroll.drawsBackground = false
+        let videoList = NSStackView()
         videoList.orientation = .vertical
         videoList.alignment = .leading
         videoList.spacing = 2
+        videoList.translatesAutoresizingMaskIntoConstraints = false
         videoScroll.documentView = videoList
-        videoScroll.hasVerticalScroller = true
+        // Only use widthAnchor if available (macOS 10.11+)
+        if #available(macOS 10.11, *) {
+            videoList.widthAnchor.constraint(equalTo: videoScroll.widthAnchor).isActive = true
+        }
         container.addSubview(videoScroll)
 
         var audioLabel: NSTextField
         if #available(macOS 10.12, *) {
             audioLabel = NSTextField(labelWithString: "Audio Tracks:")
         } else {
-            audioLabel = NSTextField(frame: NSRect(x: 0, y: 96, width: 100, height: 20))
+            audioLabel = NSTextField(frame: NSRect(x: 0, y: 146, width: 100, height: 20))
             audioLabel.stringValue = "Audio Tracks:"
             audioLabel.isEditable = false
             audioLabel.isBordered = false
             audioLabel.drawsBackground = false
         }
-        audioLabel.frame = NSRect(x: 0, y: 96, width: 100, height: 20)
+        audioLabel.frame = NSRect(x: 0, y: 146, width: 100, height: 20)
         container.addSubview(audioLabel)
 
-        let audioScroll = NSScrollView(frame: NSRect(x: 0, y: 18, width: 360, height: 70))
-        let audioList = NSStackView(frame: audioScroll.bounds)
+        // --- Audio ScrollView with always-on vertical scrollbar ---
+        let audioScroll = NSScrollView(frame: NSRect(x: 0, y: 18, width: 380, height: 120))
+        audioScroll.hasVerticalScroller = true
+        audioScroll.autohidesScrollers = false
+        audioScroll.borderType = .bezelBorder
+        audioScroll.drawsBackground = false
+        let audioList = NSStackView()
         audioList.orientation = .vertical
         audioList.alignment = .leading
         audioList.spacing = 2
+        audioList.translatesAutoresizingMaskIntoConstraints = false
         audioScroll.documentView = audioList
-        audioScroll.hasVerticalScroller = true
+        if #available(macOS 10.11, *) {
+            audioList.widthAnchor.constraint(equalTo: audioScroll.widthAnchor).isActive = true
+        }
         container.addSubview(audioScroll)
 
         // Loading indicator
-        let loadingIndicator = NSProgressIndicator(frame: NSRect(x: 320, y: 200, width: 24, height: 24))
+        let loadingIndicator = NSProgressIndicator(frame: NSRect(x: 340, y: 300, width: 24, height: 24))
         loadingIndicator.style = .spinning
         loadingIndicator.controlSize = .small
         loadingIndicator.isDisplayedWhenStopped = false
@@ -413,13 +430,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Helper to update checkboxes (macOS 10.11+ only)
         func updateTrackCheckboxes() {
+            // Remove all previous checkboxes
             if #available(macOS 10.11, *) {
-                videoList.arrangedSubviews.forEach { videoList.removeArrangedSubview($0); $0.removeFromSuperview() }
-                audioList.arrangedSubviews.forEach { audioList.removeArrangedSubview($0); $0.removeFromSuperview() }
+                for v in videoList.arrangedSubviews {
+                    videoList.removeArrangedSubview(v)
+                    v.removeFromSuperview()
+                }
+                for a in audioList.arrangedSubviews {
+                    audioList.removeArrangedSubview(a)
+                    a.removeFromSuperview()
+                }
             } else {
                 for v in videoList.subviews { v.removeFromSuperview() }
                 for a in audioList.subviews { a.removeFromSuperview() }
             }
+            // Add new checkboxes, all unchecked by default
             for (idx, v) in availableVideoTracks.enumerated() {
                 let cb: NSButton
                 if #available(macOS 10.12, *) {
@@ -433,7 +458,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cb.target = self
                     cb.action = #selector(AppDelegate.handleVideoTrackCheckboxChanged(_:))
                 }
-                cb.state = selectedVideoFormatIDs.contains(v.formatID) ? .on : .off
+                cb.state = .off // Unchecked by default
                 cb.tag = idx
                 if #available(macOS 10.11, *) {
                     videoList.addArrangedSubview(cb)
@@ -454,7 +479,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cb.target = self
                     cb.action = #selector(AppDelegate.handleAudioTrackCheckboxChanged(_:))
                 }
-                cb.state = selectedAudioFormatIDs.contains(a.formatID) ? .on : .off
+                cb.state = .off // Unchecked by default
                 cb.tag = idx
                 if #available(macOS 10.11, *) {
                     audioList.addArrangedSubview(cb)
@@ -473,13 +498,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.availableVideoTracks = videoTracks.sorted { ($0.resolution, $0.fps) > ($1.resolution, $1.fps) }
                 self.availableAudioTracks = audioTracks
                 DispatchQueue.main.async {
-                    // Select all by default if nothing selected
-                    if self.selectedVideoFormatIDs.isEmpty {
-                        self.selectedVideoFormatIDs = Set(self.availableVideoTracks.map { $0.formatID })
-                    }
-                    if self.selectedAudioFormatIDs.isEmpty {
-                        self.selectedAudioFormatIDs = Set(self.availableAudioTracks.map { $0.formatID })
-                    }
+                    // Clear all selections (everything unchecked by default)
+                    self.selectedVideoFormatIDs.removeAll()
+                    self.selectedAudioFormatIDs.removeAll()
                     updateTrackCheckboxes()
                     loadingIndicator.stopAnimation(nil)
                     loadingIndicator.isHidden = true
@@ -598,7 +619,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             args.append(self.ffmpegPath.path)
 
             // Format selection logic
-            if !self.selectedVideoFormatIDs.isEmpty || !self.selectedAudioFormatIDs.isEmpty {
+            let isMp3 = self.selectedFormat == "mp3"
+            let hasVideo = !self.selectedVideoFormatIDs.isEmpty
+            let hasAudio = !self.selectedAudioFormatIDs.isEmpty
+
+            if hasVideo || hasAudio {
                 let vIDs = self.selectedVideoFormatIDs.sorted().joined(separator: "+")
                 let aIDs = self.selectedAudioFormatIDs.sorted().joined(separator: "+")
                 var formatString = ""
@@ -613,12 +638,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     args.append("-f")
                     args.append(formatString)
                 }
-                // Always merge to selectedFormat if not mp3
-                if self.selectedFormat != "mp3" {
+                // If user selected mp3, extract audio and set output extension to mp3
+                if isMp3 {
+                    args.append("-x")
+                    args.append("--audio-format")
+                    args.append("mp3")
+                } else {
                     args.append("--merge-output-format")
                     args.append(self.selectedFormat)
                 }
-            } else if self.selectedFormat == "mp3" {
+            } else if isMp3 {
+                // No tracks selected, but mp3 requested: fallback to bestaudio
+                args.append("-f")
+                args.append("bestaudio")
                 args.append("-x")
                 args.append("--audio-format")
                 args.append("mp3")
@@ -629,14 +661,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 args.append(self.selectedFormat)
             }
 
-            if self.downloadCaptions {
+            // Disable captions if no video tracks selected
+            let enableCaptions = hasVideo && self.downloadCaptions
+
+            if enableCaptions {
                 args.append("--write-auto-subs")
                 args.append("--sub-lang")
                 args.append("en")
             }
-            if self.embedCaptions {
+            if self.embedCaptions && enableCaptions {
                 args.append("--embed-subs")
             }
+
             let task = Process()
             task.launchPath = self.ytDlpPath.path
             task.arguments = args
