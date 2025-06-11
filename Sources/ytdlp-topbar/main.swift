@@ -425,16 +425,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if #available(macOS 10.12, *) {
                     cb = NSButton(checkboxWithTitle:
                         "\(v.resolution.isEmpty ? "" : "\(v.resolution)p") \(v.fps.isEmpty ? "" : "\(v.fps)fps") \(v.ext)\(v.formatNote.isEmpty ? "" : " (\(v.formatNote))")\(v.filesize != nil ? String(format: " %.1fMB", Double(v.filesize!) / 1024 / 1024) : "") [\(v.formatID)]",
-                        target: nil, action: nil)
+                        target: self, action: #selector(AppDelegate.handleVideoTrackCheckboxChanged(_:)))
                 } else {
                     cb = NSButton(frame: NSRect(x: 0, y: 0, width: 340, height: 20))
                     cb.setButtonType(.switch)
                     cb.title = "\(v.resolution.isEmpty ? "" : "\(v.resolution)p") \(v.fps.isEmpty ? "" : "\(v.fps)fps") \(v.ext)\(v.formatNote.isEmpty ? "" : " (\(v.formatNote))")\(v.filesize != nil ? String(format: " %.1fMB", Double(v.filesize!) / 1024 / 1024) : "") [\(v.formatID)]"
+                    cb.target = self
+                    cb.action = #selector(AppDelegate.handleVideoTrackCheckboxChanged(_:))
                 }
                 cb.state = selectedVideoFormatIDs.contains(v.formatID) ? .on : .off
                 cb.tag = idx
-                cb.target = self
-                cb.action = #selector(videoTrackCheckboxChanged)
                 if #available(macOS 10.11, *) {
                     videoList.addArrangedSubview(cb)
                 } else {
@@ -446,16 +446,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if #available(macOS 10.12, *) {
                     cb = NSButton(checkboxWithTitle:
                         "\(a.acodec) \(a.ext)\(a.formatNote.isEmpty ? "" : " (\(a.formatNote))")\(a.filesize != nil ? String(format: " %.1fMB", Double(a.filesize!) / 1024 / 1024) : "") [\(a.formatID)]",
-                        target: nil, action: nil)
+                        target: self, action: #selector(AppDelegate.handleAudioTrackCheckboxChanged(_:)))
                 } else {
                     cb = NSButton(frame: NSRect(x: 0, y: 0, width: 340, height: 20))
                     cb.setButtonType(.switch)
                     cb.title = "\(a.acodec) \(a.ext)\(a.formatNote.isEmpty ? "" : " (\(a.formatNote))")\(a.filesize != nil ? String(format: " %.1fMB", Double(a.filesize!) / 1024 / 1024) : "") [\(a.formatID)]"
+                    cb.target = self
+                    cb.action = #selector(AppDelegate.handleAudioTrackCheckboxChanged(_:))
                 }
                 cb.state = selectedAudioFormatIDs.contains(a.formatID) ? .on : .off
                 cb.tag = idx
-                cb.target = self
-                cb.action = #selector(audioTrackCheckboxChanged)
                 if #available(macOS 10.11, *) {
                     audioList.addArrangedSubview(cb)
                 } else {
@@ -508,6 +508,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if !url.isEmpty {
                 downloadYouTubeVideo(url: url)
             }
+        }
+    }
+
+    // Checkbox actions must be class methods and visible to selectors
+    @objc func handleVideoTrackCheckboxChanged(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx >= 0 && idx < availableVideoTracks.count else { return }
+        let id = availableVideoTracks[idx].formatID
+        if sender.state == .on {
+            selectedVideoFormatIDs.insert(id)
+        } else {
+            selectedVideoFormatIDs.remove(id)
+        }
+    }
+
+    @objc func handleAudioTrackCheckboxChanged(_ sender: NSButton) {
+        let idx = sender.tag
+        guard idx >= 0 && idx < availableAudioTracks.count else { return }
+        let id = availableAudioTracks[idx].formatID
+        if sender.state == .on {
+            selectedAudioFormatIDs.insert(id)
+        } else {
+            selectedAudioFormatIDs.remove(id)
         }
     }
 
