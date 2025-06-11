@@ -1,3 +1,7 @@
 # ytdlp-topbar
+A GUI for YT-DLP that lives in your menubar.
+Written in Swift.
 
-A description of this package.
+## installation
+
+Coming soon with brew...
