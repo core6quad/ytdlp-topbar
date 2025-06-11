@@ -1,4 +1,5 @@
 import Cocoa
+import ServiceManagement
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
@@ -9,6 +10,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return dir
     }()
     var ytDlpPath: URL { ytDlpDir.appendingPathComponent("yt-dlp") }
+    @objc func quitApp(_ sender: Any?) {
+        NSApp.terminate(nil)
+    }
 
     // Status tracking
     enum AppStatus {
@@ -22,6 +26,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     var infoMenuItem: NSMenuItem?
     var downloadMenuItem: NSMenuItem?
+    var optionsMenuItem: NSMenuItem?
+    var optionsWindow: NSWindow?
 
     // Add progress tracking variables
     var downloadProgress: (percent: Double, speed: String, eta: String)? = nil {
@@ -50,8 +56,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(downloadItem)
         self.downloadMenuItem = downloadItem
 
+        let optionsItem = NSMenuItem(title: "Options…", action: #selector(showOptionsWindow), keyEquivalent: ",")
+        optionsItem.target = self
+        menu.addItem(optionsItem)
+        self.optionsMenuItem = optionsItem
+
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp(_:)), keyEquivalent: "q"))
         statusItem?.menu = menu
 
         // Download yt-dlp if needed
@@ -177,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
                 // Try to parse yt-dlp progress lines
                 // Example: [download]   0.0% of ~4.97MiB at  1.23MiB/s ETA 00:04
-                if let match = line.range(of: #"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+[KMG]?i?B/s).*?ETA\s+([0-9:]+)"#, options: .regularExpression) {
+                if line.range(of: #"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+[KMG]?i?B/s).*?ETA\s+([0-9:]+)"#, options: .regularExpression) != nil {
                     let regex = try! NSRegularExpression(pattern: #"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+[KMG]?i?B/s).*?ETA\s+([0-9:]+)"#)
                     if let result = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                        let percentRange = Range(result.range(at: 1), in: line),
@@ -225,8 +236,133 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func quit() {
-        NSApp.terminate(nil)
+    // --- Options Window Implementation ---
+    @objc func showOptionsWindow() {
+        if optionsWindow != nil {
+            optionsWindow?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 220),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false)
+        window.title = "Options"
+        window.isReleasedWhenClosed = false
+
+        let contentView = NSView(frame: window.contentRect(forFrameRect: window.frame))
+
+        if #available(macOS 10.12, *) {
+            // Autostart checkbox
+            let autostartCheckbox = NSButton(checkboxWithTitle: "Start at login", target: self, action: #selector(toggleAutostart(_:)))
+            autostartCheckbox.frame = NSRect(x: 20, y: 170, width: 200, height: 24)
+            autostartCheckbox.state = isAutostartEnabled() ? .on : .off
+            contentView.addSubview(autostartCheckbox)
+
+            // yt-dlp version label
+            let versionLabel = NSTextField(labelWithString: "yt-dlp version: Checking…")
+            versionLabel.frame = NSRect(x: 20, y: 130, width: 350, height: 24)
+            contentView.addSubview(versionLabel)
+            getYtDlpVersion { version in
+                DispatchQueue.main.async {
+                    versionLabel.stringValue = "yt-dlp version: \(version)"
+                }
+            }
+
+            // Reinstall yt-dlp button
+            let reinstallButton = NSButton(title: "Reinstall yt-dlp", target: self, action: #selector(reinstallYtDlp))
+            reinstallButton.frame = NSRect(x: 20, y: 90, width: 150, height: 30)
+            contentView.addSubview(reinstallButton)
+
+            // Placeholder for more options
+            let moreLabel = NSTextField(labelWithString: "More options coming soon…")
+            moreLabel.frame = NSRect(x: 20, y: 50, width: 350, height: 24)
+            contentView.addSubview(moreLabel)
+        } else {
+            // Fallback for older macOS versions
+            let infoLabel = NSTextField(frame: NSRect(x: 20, y: 100, width: 350, height: 24))
+            infoLabel.isEditable = false
+            infoLabel.isBordered = false
+            infoLabel.drawsBackground = false
+            infoLabel.stringValue = "Options are only available on macOS 10.12 or newer."
+            contentView.addSubview(infoLabel)
+        }
+
+        window.contentView = contentView
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.optionsWindow = window
+        window.delegate = self
+    }
+
+    // --- Autostart on login ---
+    @objc func toggleAutostart(_ sender: NSButton) {
+        let enabled = (sender.state == .on)
+        setAutostart(enabled: enabled)
+    }
+
+    func isAutostartEnabled() -> Bool {
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let jobs = (SMCopyAllJobDictionaries(kSMDomainUserLaunchd)?.takeRetainedValue() as? [[String: AnyObject]]) ?? []
+        return jobs.contains { ($0["Label"] as? String) == bundleID }
+    }
+
+    func setAutostart(enabled: Bool) {
+        // Remove unused bundleURL variable
+        if enabled {
+            SMLoginItemSetEnabled(Bundle.main.bundleIdentifier! as CFString, true)
+        } else {
+            SMLoginItemSetEnabled(Bundle.main.bundleIdentifier! as CFString, false)
+        }
+    }
+
+    // --- yt-dlp version ---
+    func getYtDlpVersion(completion: @escaping (String) -> Void) {
+        DispatchQueue.global().async {
+            guard FileManager.default.fileExists(atPath: self.ytDlpPath.path) else {
+                completion("Not installed")
+                return
+            }
+            let task = Process()
+            task.launchPath = self.ytDlpPath.path
+            task.arguments = ["--version"]
+            let pipe = Pipe()
+            task.standardOutput = pipe
+            do {
+                if #available(macOS 10.13, *) {
+                    try task.run()
+                } else {
+                    task.launch()
+                }
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let version = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
+                completion(version)
+            } catch {
+                completion("Error")
+            }
+        }
+    }
+
+    @objc func reinstallYtDlp() {
+        appStatus = .downloadingYtDlp
+        DispatchQueue.global().async {
+            // Remove old yt-dlp if exists
+            try? FileManager.default.removeItem(at: self.ytDlpPath)
+            self.downloadAndUnpackYtDlp()
+        }
+    }
+
+    // --- NSWindowDelegate to clear reference on close ---
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if let win = notification.object as? NSWindow, win == self.optionsWindow {
+            self.optionsWindow = nil
+        }
     }
 }
 
