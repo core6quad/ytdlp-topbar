@@ -290,19 +290,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func isAutostartEnabled() -> Bool {
-        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let helperBundleID = "com.core6quad.ytdlp-topbar.HelperApp"
+        // Only use legacy API, SMAppService is not available in SwiftPM/Xcode 13-
         let jobs = (SMCopyAllJobDictionaries(kSMDomainUserLaunchd)?.takeRetainedValue() as? [[String: AnyObject]]) ?? []
-        return jobs.contains { ($0["Label"] as? String) == bundleID }
+        return jobs.contains { ($0["Label"] as? String) == helperBundleID }
     }
 
     func setAutostart(enabled: Bool) {
-        // Use SMLoginItemSetEnabled only for helper apps, not for main app bundle
-        // For now, just show an alert to indicate this is not supported directly
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Autostart Not Supported"
-        alert.informativeText = "Autostart requires a helper app and cannot be enabled directly from this app. Please see Apple's documentation for details."
-        alert.runModal()
+        let helperBundleID = "com.core6quad.ytdlp-topbar.HelperApp"
+        if !SMLoginItemSetEnabled(helperBundleID as CFString, enabled) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Autostart Error"
+            alert.informativeText = "Failed to change autostart."
+            alert.runModal()
+        }
     }
 
     // --- yt-dlp version ---
