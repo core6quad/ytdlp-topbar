@@ -999,3 +999,39 @@ app.setActivationPolicy(.accessory)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
+
+#if !os(macOS)
+#error("This app only supports macOS")
+#endif
+
+// If running as CLI, launch the app bundle if not already running as an app
+import Foundation
+
+func launchAppBundleIfNeeded() {
+    let bundleID = "com.core6quad.ytdlp-topbar"
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+    if running.isEmpty {
+        // Try to find the .app bundle in Homebrew prefix or current directory
+        let fm = FileManager.default
+        let possiblePaths = [
+            "/Applications/ytdlp-topbar.app",
+            "\(Bundle.main.bundlePath)/../ytdlp-topbar.app",
+            "/usr/local/opt/ytdlp-topbar/ytdlp-topbar.app",
+            "/opt/homebrew/opt/ytdlp-topbar/ytdlp-topbar.app"
+        ]
+        for path in possiblePaths {
+            if fm.fileExists(atPath: path) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                return
+            }
+        }
+        // Fallback: try to launch by bundle id
+        NSWorkspace.shared.launchApplication(withBundleIdentifier: bundleID, options: [], additionalEventParamDescriptor: nil, launchIdentifier: nil)
+    }
+}
+
+// Only run this if launched as a CLI tool (not as .app bundle)
+if Bundle.main.bundlePath.hasSuffix("/ytdlp-topbar") {
+    launchAppBundleIfNeeded()
+    exit(0)
+}
