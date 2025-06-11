@@ -10,21 +10,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     var ytDlpPath: URL { ytDlpDir.appendingPathComponent("yt-dlp") }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Download yt-dlp if needed
-        ensureYtDlpPresent()
+    // Status tracking
+    enum AppStatus {
+        case idle
+        case downloadingYtDlp
+        case downloadingVideo(String)
+        case error(String)
+    }
+    var appStatus: AppStatus = .idle {
+        didSet { updateStatusUI() }
+    }
+    var infoMenuItem: NSMenuItem?
+    var downloadMenuItem: NSMenuItem?
 
+    // Add progress tracking variables
+    var downloadProgress: (percent: Double, speed: String, eta: String)? = nil {
+        didSet { updateStatusUI() }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
         // Create the status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem?.button {
-            if #available(macOS 11.0, *) {
-                button.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "ytdlp-topbar")
-            } else if #available(macOS 10.12.2, *) {
-                button.image = NSImage(named: NSImage.touchBarDownloadTemplateName)
-            } else {
-                button.image = NSImage(named: NSImage.Name("NSApplicationIcon"))
-            }
-        }
+        updateStatusIcon()
 
         // Create the menu
         let menu = NSMenu()
@@ -32,18 +39,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         helloItem.isEnabled = false
         menu.addItem(helloItem)
         menu.addItem(NSMenuItem.separator())
+
+        let infoItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
+        infoItem.isEnabled = false
+        menu.addItem(infoItem)
+        self.infoMenuItem = infoItem
+
         let downloadItem = NSMenuItem(title: "Download YouTube Video…", action: #selector(showDownloadWindow), keyEquivalent: "d")
         downloadItem.target = self
         menu.addItem(downloadItem)
+        self.downloadMenuItem = downloadItem
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem?.menu = menu
+
+        // Download yt-dlp if needed
+        DispatchQueue.global().async {
+            self.ensureYtDlpPresent()
+        }
+    }
+
+    func updateStatusUI() {
+        DispatchQueue.main.async {
+            // Update menu info
+            switch self.appStatus {
+            case .idle:
+                self.infoMenuItem?.title = "Status: Idle"
+                self.downloadMenuItem?.isEnabled = true
+            case .downloadingYtDlp:
+                self.infoMenuItem?.title = "Status: Downloading yt-dlp…"
+                self.downloadMenuItem?.isEnabled = false
+            case .downloadingVideo(let url):
+                var status = "Status: Downloading video…"
+                if let progress = self.downloadProgress {
+                    status += String(format: "\n%.1f%%, %@, ETA: %@", progress.percent, progress.speed, progress.eta)
+                }
+                status += "\n\(url)"
+                self.infoMenuItem?.title = status
+                self.downloadMenuItem?.isEnabled = false
+            case .error(let msg):
+                self.infoMenuItem?.title = "Status: Error\n\(msg)"
+                self.downloadMenuItem?.isEnabled = true
+            }
+            self.updateStatusIcon()
+        }
+    }
+
+    func updateStatusIcon() {
+        guard let button = statusItem?.button else { return }
+        switch appStatus {
+        case .idle, .error:
+            if #available(macOS 11.0, *) {
+                button.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "ytdlp-topbar")
+            } else if #available(macOS 10.12.2, *) {
+                button.image = NSImage(named: NSImage.touchBarDownloadTemplateName)
+            } else {
+                button.image = NSImage(named: NSImage.Name("NSApplicationIcon"))
+            }
+        case .downloadingYtDlp, .downloadingVideo:
+            if #available(macOS 11.0, *) {
+                button.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath.circle", accessibilityDescription: "Loading")
+            } else {
+                button.image = NSImage(named: NSImage.Name("NSRefreshTemplate"))
+            }
+        }
     }
 
     func ensureYtDlpPresent() {
         if FileManager.default.fileExists(atPath: ytDlpPath.path) {
+            appStatus = .idle
             return
         }
+        appStatus = .downloadingYtDlp
         downloadAndUnpackYtDlp()
     }
 
@@ -53,13 +121,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sema = DispatchSemaphore(value: 0)
         let task = URLSession.shared.downloadTask(with: url) { location, response, error in
             defer { sema.signal() }
-            guard let location = location, error == nil else { return }
+            guard let location = location, error == nil else {
+                self.appStatus = .error("Failed to download yt-dlp")
+                return
+            }
             do {
                 try FileManager.default.moveItem(at: location, to: tmpURL)
                 try FileManager.default.moveItem(at: tmpURL, to: self.ytDlpPath)
                 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: self.ytDlpPath.path)
+                self.appStatus = .idle
             } catch {
-                print("Failed to install yt-dlp: \(error)")
+                self.appStatus = .error("Failed to install yt-dlp: \(error)")
             }
         }
         task.resume()
@@ -90,23 +162,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         savePanel.canCreateDirectories = true
         savePanel.begin { result in
             guard result == .OK, let saveURL = savePanel.url else { return }
+            self.appStatus = .downloadingVideo(url)
+            self.downloadProgress = nil
             let task = Process()
             task.launchPath = self.ytDlpPath.path
-            task.arguments = ["-o", saveURL.path, url]
+            task.arguments = ["-o", saveURL.path, url, "--progress", "--newline"]
             let pipe = Pipe()
             task.standardOutput = pipe
             task.standardError = pipe
+
+            // Progress parsing
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
+                // Try to parse yt-dlp progress lines
+                // Example: [download]   0.0% of ~4.97MiB at  1.23MiB/s ETA 00:04
+                if let match = line.range(of: #"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+[KMG]?i?B/s).*?ETA\s+([0-9:]+)"#, options: .regularExpression) {
+                    let regex = try! NSRegularExpression(pattern: #"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+[KMG]?i?B/s).*?ETA\s+([0-9:]+)"#)
+                    if let result = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                       let percentRange = Range(result.range(at: 1), in: line),
+                       let speedRange = Range(result.range(at: 2), in: line),
+                       let etaRange = Range(result.range(at: 3), in: line) {
+                        let percent = Double(line[percentRange]) ?? 0
+                        let speed = String(line[speedRange])
+                        let eta = String(line[etaRange])
+                        self.downloadProgress = (percent, speed, eta)
+                    }
+                }
+            }
+
             task.terminationHandler = { proc in
                 DispatchQueue.main.async {
-                    let alert = NSAlert()
+                    self.downloadProgress = nil
                     if proc.terminationStatus == 0 {
+                        self.appStatus = .idle
+                        let alert = NSAlert()
                         alert.messageText = "Download Complete"
                         alert.informativeText = "The video was downloaded successfully."
+                        alert.runModal()
                     } else {
+                        self.appStatus = .error("yt-dlp failed to download the video.")
+                        let alert = NSAlert()
                         alert.messageText = "Download Failed"
                         alert.informativeText = "yt-dlp failed to download the video."
+                        alert.runModal()
                     }
-                    alert.runModal()
                 }
             }
             do {
@@ -116,6 +216,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     task.launch()
                 }
             } catch {
+                self.appStatus = .error("Failed to launch yt-dlp: \(error)")
                 let alert = NSAlert()
                 alert.messageText = "Error"
                 alert.informativeText = "Failed to launch yt-dlp: \(error)"
